@@ -80,6 +80,9 @@ export default {
       }, 
       FIREBASE_API_KEY: process.env.FIREBASE_API_KEY,
     },
+    assetBundlePatterns: [
+      "assets/**/*"
+    ],
     owner: "dmarklouil21"
   }
 };

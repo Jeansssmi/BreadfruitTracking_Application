@@ -1,9 +1,10 @@
 import { MaterialIcons } from '@expo/vector-icons';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { httpsCallable } from 'firebase/functions';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Image,
   KeyboardAvoidingView,
@@ -11,7 +12,7 @@ import {
   ScrollView,
   StyleSheet,
   TouchableOpacity,
-  View
+  View,
 } from 'react-native';
 import { Button, Menu, Text, TextInput } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -21,11 +22,12 @@ import barangayData from '@/constants/barangayData';
 import { useAuth } from '@/context/AuthContext';
 import { functions } from '@/firebaseConfig';
 import { Tree } from '@/types';
-import { enGB, registerTranslation } from 'react-native-paper-dates';
-registerTranslation('en', enGB);
 
-
-
+// TensorFlow.js
+import * as tf from '@tensorflow/tfjs';
+import '@tensorflow/tfjs-react-native';
+import { bundleResourceIO, decodeJpeg } from '@tensorflow/tfjs-react-native';
+import * as FileSystem from 'expo-file-system';
 
 const FRUIT_STATUS_OPTIONS = ['none', 'unripe', 'ripe'];
 
@@ -46,6 +48,7 @@ export default function AddTreeForm() {
   const [fruitStatusMenuVisible, setFruitStatusMenuVisible] = useState(false);
   const [cityOptionsMenuVisible, setCityOptionsMenuVisible] = useState(false);
   const [barangayOptionsMenuVisible, setBarangayOptionsMenuVisible] = useState(false);
+  const [showDatePicker, setShowDatePicker] = useState(false);
 
   const [formData, setFormData] = useState<Tree>({
     treeID: '',
@@ -60,13 +63,90 @@ export default function AddTreeForm() {
     trackedBy: user?.name || '',
   });
 
-  const CITY_OPTIONS = Object.keys(barangayData)
+  const CITY_OPTIONS = Object.keys(barangayData);
   const BARANGAY_OPTIONS = barangayData[formData.city] || [];
 
   const [loading, setLoading] = useState(false);
   const [notificationVisible, setNotificationVisible] = useState(false);
   const [notificationMessage, setNotificationMessage] = useState('');
   const [notificationType, setNotificationType] = useState<'success' | 'info' | 'error'>('info');
+
+  const [classifierModel, setClassifierModel] = useState<tf.GraphModel | null>(null);
+  const [diameterModel, setDiameterModel] = useState<tf.GraphModel | null>(null);
+
+  useEffect(() => {
+    const loadModels = async () => {
+      try {
+        await tf.ready();
+        console.log("TensorFlow.js is ready");
+        
+        // Load classifier model
+        const classifier = await tf.loadGraphModel(
+          bundleResourceIO(
+            require('../../../assets/classifier_model/model.json'),
+            [
+              require('../../../assets/classifier_model/group1-shard1of3.bin'),
+              require('../../../assets/classifier_model/group1-shard2of3.bin'),
+              require('../../../assets/classifier_model/group1-shard3of3.bin'),
+            ]
+          )
+        );
+
+        // Load diameter model
+        const diameter = await tf.loadGraphModel(
+          bundleResourceIO(
+            require('../../../assets/breadfruit_diameter_model/model.json'),
+            [
+              require('../../../assets/breadfruit_diameter_model/group1-shard1of23.bin'),
+              require('../../../assets/breadfruit_diameter_model/group1-shard2of23.bin'),
+              require('../../../assets/breadfruit_diameter_model/group1-shard3of23.bin'),
+              require('../../../assets/breadfruit_diameter_model/group1-shard4of23.bin'),
+              require('../../../assets/breadfruit_diameter_model/group1-shard5of23.bin'),
+              require('../../../assets/breadfruit_diameter_model/group1-shard6of23.bin'),
+              require('../../../assets/breadfruit_diameter_model/group1-shard7of23.bin'),
+              require('../../../assets/breadfruit_diameter_model/group1-shard8of23.bin'),
+              require('../../../assets/breadfruit_diameter_model/group1-shard9of23.bin'),
+              require('../../../assets/breadfruit_diameter_model/group1-shard10of23.bin'),
+              require('../../../assets/breadfruit_diameter_model/group1-shard11of23.bin'),
+              require('../../../assets/breadfruit_diameter_model/group1-shard12of23.bin'),
+              require('../../../assets/breadfruit_diameter_model/group1-shard13of23.bin'),
+              require('../../../assets/breadfruit_diameter_model/group1-shard14of23.bin'),
+              require('../../../assets/breadfruit_diameter_model/group1-shard15of23.bin'),
+              require('../../../assets/breadfruit_diameter_model/group1-shard16of23.bin'),
+              require('../../../assets/breadfruit_diameter_model/group1-shard17of23.bin'),
+              require('../../../assets/breadfruit_diameter_model/group1-shard18of23.bin'),
+              require('../../../assets/breadfruit_diameter_model/group1-shard19of23.bin'),
+              require('../../../assets/breadfruit_diameter_model/group1-shard20of23.bin'),
+              require('../../../assets/breadfruit_diameter_model/group1-shard21of23.bin'),
+              require('../../../assets/breadfruit_diameter_model/group1-shard22of23.bin'),
+              require('../../../assets/breadfruit_diameter_model/group1-shard23of23.bin'),
+            ]
+          )
+        );
+
+        setClassifierModel(classifier);
+        setDiameterModel(diameter);
+        console.log("✅ Models loaded successfully");
+      } catch (err) {
+        console.error("❌ Failed to load models", err);
+        // Show error notification to user
+        setNotificationMessage('Failed to load AI models. Please restart the app.');
+        setNotificationType('error');
+        setNotificationVisible(true);
+      }
+    };
+
+    loadModels();
+  }, []);
+
+  const imageToTensor = async (uri: string) => {
+    const imgB64 = await FileSystem.readAsStringAsync(uri, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+    const imgBuffer = tf.util.encodeString(imgB64, 'base64').buffer;
+    const raw = new Uint8Array(imgBuffer);
+    return decodeJpeg(raw);
+  };
 
   const pickImage = async () => {
     try {
@@ -97,19 +177,6 @@ export default function AddTreeForm() {
     setFormData(prev => ({ ...prev, [key]: value }));
   };
 
-  /** Load model helper */
-  const loadModel = (modelPath: string, labelPath?: string): Promise<void> => {
-    return new Promise((resolve, reject) => {
-      const options: any = { model: modelPath, numThreads: 1 };
-      if (labelPath) options.labels = labelPath;
-      tflite.loadModel(options, (err: Error | null) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
-  };
-
-  /** Two-step model processing (Classifier + Diameter) */
   const processImageWithModels = async () => {
     if (!image) {
       setNotificationMessage('Please select an image first.');
@@ -117,21 +184,45 @@ export default function AddTreeForm() {
       setNotificationVisible(true);
       return;
     }
+   // Enhanced model validation with detailed error handling
+if (!classifierModel || !diameterModel) {
+  let errorMessage = 'AI models are not fully loaded.\n\n';
+
+  if (!classifierModel && !diameterModel) {
+    errorMessage += '• Classifier and Diameter models are missing.\n';
+  } else if (!classifierModel) {
+    errorMessage += '• Classifier model is missing (used to detect tree type).\n';
+  } else if (!diameterModel) {
+    errorMessage += '• Diameter model is missing (used to estimate diameter).\n';
+  }
+
+  errorMessage += '\nPlease try the following:\n' +
+                  '1. Restart the app\n' +
+                  '2. Ensure all model files are in the assets folder\n' +
+                  '3. Check your app build if running on a physical device';
+
+  console.error('❌ Model validation failed:', {
+    classifierModelLoaded: !!classifierModel,
+    diameterModelLoaded: !!diameterModel,
+  });
+
+  setNotificationMessage(errorMessage);
+  setNotificationType('error');
+  setNotificationVisible(true);
+  return; // Stop further execution
+}
 
     setLoading(true);
     try {
-      // Step 1: Run classifier
-      await loadModel('classifier_model.tflite', 'treelabels.txt');
+      const imgTensor = await imageToTensor(image);
+      const input = imgTensor.expandDims(0);
 
-      const classification: any = await new Promise((resolve, reject) => {
-        tflite.runModelOnImage(
-          { path: image, numResults: 2, threshold: 0.0 },
-          (err, res) => (err ? reject(err) : resolve(res))
-        );
-      });
+      const classPred = classifierModel.predict(input) as tf.Tensor;
+      const classData = classPred.dataSync();
+      const maxIndex = classData.indexOf(Math.max(...classData));
+      const classLabel = maxIndex === 0 ? 'breadfruit' : 'other';
 
-      const top = classification?.[0];
-      if (!top || top.label.toLowerCase() !== 'breadfruit') {
+      if (classLabel !== 'breadfruit') {
         setNotificationMessage('Not a breadfruit tree.');
         setNotificationType('error');
         setNotificationVisible(true);
@@ -139,34 +230,16 @@ export default function AddTreeForm() {
         return;
       }
 
-      // Step 2: Run diameter model
-      await loadModel('breadfruit_diameter_model.tflite');
+      const diameterPred = diameterModel.predict(input) as tf.Tensor;
+      const diameter = diameterPred.dataSync()[0];
+      setDiameterInput(diameter.toFixed(2));
+      setFormData(prev => ({ ...prev, diameter }));
 
-      const diameterRes: any = await new Promise((resolve, reject) => {
-        tflite.runModelOnImage(
-          { path: image, numResults: 2, threshold: 0.0 },
-          (err, res) => (err ? reject(err) : resolve(res))
-        );
-      });
-
-      let diameter = null;
-      if (Array.isArray(diameterRes) && typeof diameterRes[0] === 'number') {
-        diameter = parseFloat(diameterRes[0].toFixed(2));
-      } else if (Array.isArray(diameterRes) && diameterRes[0]?.confidence) {
-        diameter = parseFloat(Number(diameterRes[0].confidence).toFixed(2));
-      }
-
-      if (diameter && !isNaN(diameter)) {
-        setDiameterInput(diameter.toString());
-        setFormData(prev => ({ ...prev, diameter }));
-        setNotificationMessage(`Diameter predicted: ${diameter} cm`);
-        setNotificationType('success');
-        setNotificationVisible(true);
-      } else {
-        throw new Error('Diameter model returned invalid output.');
-      }
-    } catch (e) {
-      console.error('Model error:', e);
+      setNotificationMessage(`Diameter predicted: ${diameter.toFixed(2)} cm`);
+      setNotificationType('success');
+      setNotificationVisible(true);
+    } catch (err) {
+      console.error('Model processing error:', err);
       setNotificationMessage('Model failed to process image.');
       setNotificationType('error');
       setNotificationVisible(true);
@@ -175,14 +248,23 @@ export default function AddTreeForm() {
     }
   };
 
-  const handleCoordinateChange = (key: 'latitude' | 'longitude', value: string) => {
-    setFormData(prev => ({
-      ...prev,
-      coordinates: {
-        ...prev.coordinates,
-        [key]: parseFloat(value) || 0,
-      },
-    }));
+  const resetForm = () => {
+    setImage('');
+    setDiameterInput('');
+    setLatitudeInput('0');
+    setLongitudeInput('0');
+    setFormData({
+      treeID: '',
+      city: '',
+      barangay: '',
+      diameter: 0,
+      coordinates: { latitude: 0, longitude: 0 },
+      dateTracked: new Date().toISOString().split('T')[0],
+      fruitStatus: 'none',
+      image: '',
+      status: 'pending',
+      trackedBy: user?.name || '',
+    });
   };
 
   const getCurrentLocation = async () => {
@@ -207,20 +289,51 @@ export default function AddTreeForm() {
     }
   };
 
-
   const handleSubmit = async () => {
+    if (!formData.city || !formData.barangay) {
+      setNotificationMessage('Please select a city and barangay.');
+      setNotificationType('error');
+      setNotificationVisible(true);
+      return;
+    }
+    if (!diameterInput || isNaN(Number(diameterInput)) || Number(diameterInput) <= 0) {
+      setNotificationMessage('Please enter a valid diameter.');
+      setNotificationType('error');
+      setNotificationVisible(true);
+      return;
+    }
+    if (!latitudeInput || isNaN(Number(latitudeInput)) || Number(latitudeInput) === 0) {
+      setNotificationMessage('Please enter a valid latitude.');
+      setNotificationType('error');
+      setNotificationVisible(true);
+      return;
+    }
+    if (!longitudeInput || isNaN(Number(longitudeInput)) || Number(longitudeInput) === 0) {
+      setNotificationMessage('Please enter a valid longitude.');
+      setNotificationType('error');
+      setNotificationVisible(true);
+      return;
+    }
+    if (!formData.fruitStatus || !FRUIT_STATUS_OPTIONS.includes(formData.fruitStatus)) {
+      setNotificationMessage('Please select a valid fruit status.');
+      setNotificationType('error');
+      setNotificationVisible(true);
+      return;
+    }
+
     const addNewTree = httpsCallable(functions, 'addNewTree');
     setLoading(true);
     try {
-      const result = await addNewTree ({
-        ...formData, 
+      await addNewTree({
+        ...formData,
         diameter: parseFloat(diameterInput) || 0,
         coordinates: {
           latitude: parseFloat(latitudeInput) || 0,
           longitude: parseFloat(longitudeInput) || 0,
-        }
+        },
       });
-      
+
+      resetForm();
       setNotificationMessage('Added successfully');
       setNotificationType('success');
       setNotificationVisible(true);
@@ -258,6 +371,7 @@ export default function AddTreeForm() {
               )}
             </TouchableOpacity>
 
+            {/* City and Barangay Selection */}
             <View style={styles.row}>
               <View style={[styles.input, styles.halfWidth]}>
                 <Menu
@@ -270,7 +384,7 @@ export default function AddTreeForm() {
                         value={formData.city}
                         editable={false}
                         right={<TextInput.Icon icon="menu-down" />}
-                        style={{ backgroundColor: '#f8f8f8'}}
+                        style={{ backgroundColor: '#f8f8f8' }}
                       />
                     </TouchableOpacity>
                   }
@@ -288,6 +402,7 @@ export default function AddTreeForm() {
                   ))}
                 </Menu>
               </View>
+
               <View style={[styles.input, styles.halfWidth]}>
                 <Menu
                   visible={barangayOptionsMenuVisible}
@@ -299,7 +414,7 @@ export default function AddTreeForm() {
                         value={formData.barangay}
                         editable={false}
                         right={<TextInput.Icon icon="menu-down" />}
-                        style={{ backgroundColor: '#f8f8f8'}}
+                        style={{ backgroundColor: '#f8f8f8' }}
                       />
                     </TouchableOpacity>
                   }
@@ -318,6 +433,7 @@ export default function AddTreeForm() {
               </View>
             </View>
 
+            {/* Diameter and Fruit Status */}
             <View style={styles.row}>
               <TextInput
                 label="Diameter (meters)"
@@ -326,7 +442,6 @@ export default function AddTreeForm() {
                 style={[styles.input, styles.halfWidth]}
                 keyboardType="decimal-pad"
               />
-
               <View style={[styles.input, styles.halfWidth]}>
                 <Menu
                   visible={fruitStatusMenuVisible}
@@ -338,7 +453,7 @@ export default function AddTreeForm() {
                         value={formData.fruitStatus}
                         editable={false}
                         right={<TextInput.Icon icon="menu-down" />}
-                        style={{ backgroundColor: '#f8f8f8'}}
+                        style={{ backgroundColor: '#f8f8f8' }}
                       />
                     </TouchableOpacity>
                   }
@@ -357,6 +472,7 @@ export default function AddTreeForm() {
               </View>
             </View>
 
+            {/* Coordinates Section */}
             <View style={styles.coordinateGroup}>
               <View style={styles.coordinateLegend}>
                 <Text style={styles.legendText}>Coordinates</Text>
@@ -382,22 +498,38 @@ export default function AddTreeForm() {
               </TouchableOpacity>
             </View>
 
-            <TextInput
-              label="Date Tracked"
-              value={formData.dateTracked}
-              onChangeText={text => handleChange('dateTracked', text)}
-              style={styles.input}
-            />
+            {/* Date Picker */}
+            <TouchableOpacity onPress={() => setShowDatePicker(true)}>
+              <TextInput
+                label="Date Tracked"
+                value={formData.dateTracked}
+                editable={false}
+                style={styles.input}
+                right={<TextInput.Icon icon="calendar" />}
+              />
+            </TouchableOpacity>
 
+            {showDatePicker && (
+              <DateTimePicker
+                value={new Date(formData.dateTracked)}
+                mode="date"
+                display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                onChange={(event, selectedDate) => {
+                  setShowDatePicker(false);
+                  if (selectedDate) {
+                    const formatted = selectedDate.toISOString().split('T')[0];
+                    handleChange('dateTracked', formatted);
+                  }
+                }}
+              />
+            )}
+
+            {/* Action Buttons */}
             <View style={styles.buttonGroup}>
               <Button mode="contained" onPress={handleSubmit} style={styles.primaryButton}>
                 Save
               </Button>
-              <Button
-                mode="contained"
-                onPress={processImageWithModels}   // 👈 Now runs both models
-                style={styles.secondaryButton}
-              >
+              <Button mode="contained" onPress={processImageWithModels} style={styles.secondaryButton}>
                 Image Processing
               </Button>
             </View>
@@ -412,13 +544,7 @@ const styles = StyleSheet.create({
   safeArea: { flex: 1, marginTop: -38, backgroundColor: '#fff' },
   container: { flex: 1, padding: 20, backgroundColor: '#fff' },
   row: { flexDirection: 'row', justifyContent: 'space-between', gap: 15, marginBottom: 15 },
-  input: {
-    backgroundColor: '#f8f8f8',
-    marginBottom: 16,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#eee',
-  },
+  input: { backgroundColor: '#f8f8f8', marginBottom: 16, borderRadius: 8, borderWidth: 1, borderColor: '#eee' },
   halfWidth: { flex: 1 },
   coordinateGroup: {
     borderWidth: 1,
@@ -440,19 +566,8 @@ const styles = StyleSheet.create({
   },
   rowLegend: { flexDirection: 'row', justifyContent: 'space-between', gap: 15 },
   legendText: { color: '#2ecc71', fontSize: 12, fontWeight: 'bold', marginLeft: 4 },
-  coordinateInput: {
-    backgroundColor: '#ffffff',
-    borderWidth: 0,
-    borderBottomWidth: 1,
-    borderBottomColor: '#eee',
-  },
-  useLocationText: {
-    color: '#2ecc71',
-    fontSize: 14,
-    fontWeight: '600',
-    marginTop: 12,
-    marginLeft: 4,
-  },
+  coordinateInput: { backgroundColor: '#ffffff', borderWidth: 0, borderBottomWidth: 1, borderBottomColor: '#eee' },
+  useLocationText: { color: '#2ecc71', fontSize: 14, fontWeight: '600', marginTop: 12, marginLeft: 4 },
   buttonGroup: { gap: 12, marginTop: 25 },
   primaryButton: { backgroundColor: '#2ecc71' },
   secondaryButton: { backgroundColor: '#333' },
@@ -470,13 +585,11 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    gap: 12,
-    borderStyle: 'dashed',
-    borderColor: '#2ecc71',
   },
   imageLabel: {
-    color: '#2ecc71',
+    marginTop: 8,
     fontSize: 16,
-    fontWeight: '500',
+    fontWeight: 'bold',
+    color: '#2ecc71',
   },
 });
